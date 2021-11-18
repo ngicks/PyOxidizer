@@ -71,36 +71,38 @@ impl GeneralizedTime {
     pub fn from_primitive<S: Source>(prim: &mut Primitive<S>) -> Result<Self, S::Err> {
         let data = prim.take_all()?;
 
-        if data.len() != "YYYYMMDDHHMMSSZ".len() {
+        // Under the restrictions from [RFC 2459 Section 4.1.2.5.2](https://datatracker.ietf.org/doc/html/rfc2459#section-4.1.2.5.2),
+        // granularity of GeneralizedTime is limited to one second.
+        // In [RFC 3161](https://datatracker.ietf.org/doc/html/rfc3161#page-9),
+        // GeneralizedTime can have fraction-of-time (The syntax is: YYYYMMDDhhmmss[.s...]Z)
+        // Thus data_len must be 15 (length of "YYYYMMDDHHMMSSZ") or more.
+        let mandatory_len = "YYYYMMDDHHMMSSZ".len();
+        let data_len = data.len();
+        // Timezone must be Zulu.
+        if data_len < mandatory_len || data[data_len - 1] != b'Z' {
             return Err(Malformed.into());
         }
 
-        let year = i32::from_str(std::str::from_utf8(&data[0..4]).map_err(|_| Malformed)?)
-            .map_err(|_| Malformed)?;
-        let month = u32::from_str(std::str::from_utf8(&data[4..6]).map_err(|_| Malformed)?)
-            .map_err(|_| Malformed)?;
-        let day = u32::from_str(std::str::from_utf8(&data[6..8]).map_err(|_| Malformed)?)
-            .map_err(|_| Malformed)?;
-        let hour = u32::from_str(std::str::from_utf8(&data[8..10]).map_err(|_| Malformed)?)
-            .map_err(|_| Malformed)?;
-        let minute = u32::from_str(std::str::from_utf8(&data[10..12]).map_err(|_| Malformed)?)
-            .map_err(|_| Malformed)?;
-        let second = u32::from_str(std::str::from_utf8(&data[12..14]).map_err(|_| Malformed)?)
-            .map_err(|_| Malformed)?;
+        // skipping last Z
+        let date_str = std::str::from_utf8(&data[0..(data_len - 1)]).map_err(|_| Malformed)?;
 
-        if data[14] != b'Z' {
-            return Err(Malformed.into());
-        }
-
-        if let chrono::LocalResult::Single(dt) = chrono::Utc.ymd_opt(year, month, day) {
-            if let Some(dt) = dt.and_hms_opt(hour, minute, second) {
-                Ok(Self(dt))
-            } else {
-                Err(Malformed.into())
-            }
+        let dt = if data_len == mandatory_len {
+            //YYYYMMDDHHMMSS
+            chrono::NaiveDateTime::parse_from_str(date_str, "%Y%m%d%H%M%S")
+                .map_err(|_| Malformed)?
         } else {
-            Err(Malformed.into())
-        }
+            chrono::NaiveDateTime::parse_from_str(
+                // padding to YYYYMMDDHHMMSS.sssssssss (9-digit fraction-of-second)
+                &format!("{:0<24}", date_str),
+                "%Y%m%d%H%M%S.%9f",
+            )
+            .map_err(|_| Malformed)?
+        };
+
+        Ok(Self(chrono::DateTime::<chrono::Utc>::from_utc(
+            dt,
+            chrono::Utc,
+        )))
     }
 }
 
